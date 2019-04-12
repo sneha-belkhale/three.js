@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - box projected cubemap environment mapping</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				color: #888888;
+				font-family:Monospace;
+				font-size:13px;
+
+				background-color: #000;
+				margin: 0px;
+				overflow: hidden;
+			}
+
+			#info {
+				position: absolute;
+				top: 0px;
+				width: 500px;
+				left: calc(50% - 250px);
+				text-align: center;
+			}
+
+			a {
+				color: #00f;
+			}
+		</style>
+	</head>
+	<body>
+
+		<div id="container"></div>
+		<div id="info"><a href="http://threejs.org" target="_blank" rel="noopener">three.js</a> - box projected cubemap environment mapping. <br> created by <a href="https://codercat.tk" target="_blank" rel="noopener">codercat</a>
+		</div>
+		<script src="../build/three.js"></script>
+		<script src="js/objects/Reflector.js"></script>
+		<script src="js/controls/OrbitControls.js"></script>
+		<script src="js/libs/dat.gui.min.js"></script>
+		<script src="js/libs/stats.min.js"></script>
+
+		<script>
+
+			var spotVertexShader = `
+				varying vec3 vNormal;
+				varying vec3 vWorldPosition;
+				varying vec3 vViewPosition;
+				varying vec2 vUv;
+
+				void main(){
+					vUv = uv;
+					vNormal = normalize( normalMatrix * normal );
+					vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+					vWorldPosition = worldPosition.xyz;
+					vec4 viewPosition = modelViewMatrix * vec4( position, 1.0 );
+					vViewPosition = - viewPosition.xyz;
+					gl_Position = projectionMatrix * viewPosition;
+				}
+			`;
+			var spotFragmentShader = `
+				varying vec3 vNormal;
+				varying vec3 vWorldPosition;
+				varying vec3 vViewPosition;
+
+				varying vec2 vUv;
+				uniform vec3 lightColor;
+				uniform vec3 spotPosition;
+				uniform float attenuation;
+				uniform float anglePower;
+				uniform float decay;
+				uniform sampler2D lightTex;
+
+				uniform float time;
+				uniform float radius;
+
+				void main(){
+					float intensity;
+					vec2 scrollUv = vec2(vUv.x + time/2.0, vUv.y+time+radius/40.0);
+
+					vec4 col = texture2D(lightTex, scrollUv);
+					intensity  = distance(vWorldPosition, spotPosition)/ attenuation;
+					intensity  = pow(1.0 - clamp(intensity, 0.0, 1.0), decay);
+
+					float angleIntensity  = pow( dot(vNormal, normalize(vViewPosition)), anglePower );
+					intensity  = intensity * angleIntensity;
+					gl_FragColor  = vec4( lightColor, col.y*intensity);
+				}
+			`;
+
+
+			// scene size
+			var WIDTH = window.innerWidth;
+			var HEIGHT = window.innerHeight;
+
+			// camera
+			var VIEW_ANGLE = 45;
+			var ASPECT = WIDTH / HEIGHT;
+			var NEAR = 1;
+			var FAR = 800;
+
+			var camera, cubeCamera, scene, renderer, stats, cones, spotLights;
+
+			var cameraControls;
+
+			init();
+
+			function init() {
+
+				var container = document.getElementById( 'container' );
+
+				// renderer
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( WIDTH, HEIGHT );
+				container.appendChild( renderer.domElement );
+
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				// gui controls
+				var gui = new dat.GUI();
+				var params = {
+					'attenuation': 100,
+					'decay': 1
+				};
+				var lightGui = gui.add( params, 'attenuation', 0, 500 );
+				var angleGui = gui.add( params, 'decay', 1, 20 );
+
+				lightGui.onChange( function ( value ) {
+					cones.forEach( ( cone ) => {
+						cone.forEach( ( subCone ) => {
+							subCone.material.uniforms.attenuation.value = value;
+						})
+					})
+				} );
+				angleGui.onChange( function ( value ) {
+					cones.forEach( ( cone ) => {
+						cone.forEach( ( subCone ) => {
+							subCone.material.uniforms.decay.value = value;
+						})
+					})
+				} );
+
+				// scene
+				scene = new THREE.Scene();
+
+				// camera
+				camera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR );
+				camera.position.set( 80, 10, - 5 );
+
+				cameraControls = new THREE.OrbitControls( camera, renderer.domElement );
+				cameraControls.target.set( 0, - 10, 0 );
+				cameraControls.maxDistance = 400;
+				cameraControls.update();
+
+				var groundPlane = new THREE.Mesh( new THREE.PlaneBufferGeometry( 1000, 1000, 100 ), new THREE.MeshPhysicalMaterial() );
+				groundPlane.rotateX( - Math.PI / 2 );
+				scene.add( groundPlane );
+
+
+				//add spot light
+				var colors = [ "cyan", "red" ];
+				var numSpotLights = 2;
+				var numInnerCones = 2;
+				cones = []
+				spotLights = []
+				var texLoader = new THREE.TextureLoader()
+				for (var j = 0 ; j < numSpotLights; j++){
+					cones.push([])
+					spotLight = new THREE.SpotLight(new THREE.Color(colors[j]), 0.5, 0, Math.PI/15, 0.8);
+					var height = 100;
+					spotLight.position.set( 0, height, 0 );
+					scene.add(spotLight);
+					scene.add(spotLight.target)
+					spotLights.push(spotLight)
+					const material = new THREE.ShaderMaterial({
+						uniforms: {
+							attenuation: { value: height },
+							time: { value: 0.0 },
+							radius: { value: 40.0 },
+							anglePower: { value: 6 },
+							decay: { value: 3 },
+							spotPosition: { value: new THREE.Vector3().copy(spotLight.position) },
+							lightColor: { value: new THREE.Color(colors[j]) },
+							lightTex: {
+								value: texLoader.load('textures/perlin-512.png', (tex) => {
+									tex.wrapS = THREE.RepeatWrapping;
+									tex.wrapT = THREE.RepeatWrapping;
+									for (var k = 0; k < numSpotLights; k++) {
+										for (var i = 0; i < numInnerCones; i++) {
+											cones[k][i].material.uniforms.lightTex.value = tex;
+										}
+									}
+								}),
+							},
+						},
+						vertexShader: spotVertexShader,
+						fragmentShader: spotFragmentShader,
+						side: THREE.DoubleSide,
+						blending: THREE.Additive,
+						transparent: true,
+						depthWrite: false,
+					});
+					//add cones
+					for (var i  = 0 ; i < numInnerCones; i ++){
+						const geometry = new THREE.CylinderGeometry(0, 35 - 10 *i, height, 100, true);
+						geometry.applyMatrix( new THREE.Matrix4().makeTranslation( 0, -geometry.parameters.height/2, 0 ) );
+						geometry.applyMatrix( new THREE.Matrix4().makeRotationX( -Math.PI / 2 ) );
+						cone = new THREE.Mesh(geometry, material.clone());
+						cone.position.copy(spotLight.position)
+						cone.lookAt(new THREE.Vector3(0,0,0))
+						cone.material.uniforms.radius.value = 35 - 10*i;
+						cones[j].push(cone)
+						scene.add(cone)
+					}
+				}
+
+				//add box
+				var box = new THREE.Mesh(new THREE.BoxGeometry(10,100,10), new THREE.MeshPhysicalMaterial())
+				box.position.y = 0;
+				scene.add(box)
+
+				render();
+
+			}
+
+			function render() {
+				cones.forEach((cone,index) => {
+					var angle	= 0.0001 * Math.PI * Date.now();
+					var target	= new THREE.Vector3( 10, 0, 40 * Math.sin( 2 * index + angle ) );
+					spotLights[ index ].target.position.copy( target );
+					cone.forEach( ( subCone ) => {
+						subCone.material.uniforms.time.value += 0.0005;
+						subCone.lookAt( target )
+					})
+				})
+				requestAnimationFrame( render );
+				stats.begin()
+				renderer.render( scene, camera );
+				stats.end()
+			}
+
+		</script>
+	</body>
+</html>
